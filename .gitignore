@@ -1,0 +1,6 @@
+.env
+.env.production
+/reports
+__pycache__
+.cache
+venv
