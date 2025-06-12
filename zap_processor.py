@@ -42,12 +42,14 @@ def ensure_ollama_models():
 class SecurityExpert:
     def __init__(self):
         # Ensure required models are available
-        ensure_ollama_models()
+        # ensure_ollama_models()
+        
+        ollama_port = os.getenv("OLLAMA_PORT", "11434")
         
         config_list = [
             {
                 "model": "phi4-mini:latest",
-                "base_url": "http://localhost:11434/api",
+                "base_url": f"http://ollama:{ollama_port}/api",
                 "api_type": "ollama"
             }
         ]
@@ -423,8 +425,8 @@ def process_zap_scan(target_url: str, output_dir: str = "reports", save_raw: boo
         zap = ZAPv2(
             apikey=os.getenv('ZAP_API_KEY', '12345'),
             proxies={
-                'http': f'http://localhost:{os.getenv("ZAP_PORT", "8080")}',
-                'https': f'http://localhost:{os.getenv("ZAP_PORT", "8080")}'
+                'http': f'http://zap:{os.getenv("ZAP_PORT", "8080")}',
+                'https': f'http://zap:{os.getenv("ZAP_PORT", "8080")}'
             }
         )
         

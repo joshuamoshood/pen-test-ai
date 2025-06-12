@@ -1,0 +1,43 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./reports:/app/reports
+    environment:
+      - ZAP_PORT=${ZAP_PORT}
+      - OLLAMA_PORT=${OLLAMA_PORT}
+      - ZAP_URL=http://zap:${ZAP_PORT}
+      - OLLAMA_URL=http://ollama:${OLLAMA_PORT}
+    depends_on:
+      - zap
+      - ollama
+    command: ["sh", "./start.sh"]
+    networks:
+      - pen-test-network
+
+  zap:
+    image: zaproxy/zap-stable:latest
+    ports:
+      - "${ZAP_PORT}:${ZAP_PORT}"
+    command: zap.sh -daemon -host 0.0.0.0 -port ${ZAP_PORT} -config api.disablekey=true -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true
+    networks:
+      - pen-test-network
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "${OLLAMA_PORT}:${OLLAMA_PORT}"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - pen-test-network
+
+volumes:
+  ollama_data:
+    driver: local
+
+networks:
+  pen-test-network:
+    driver: bridge 
