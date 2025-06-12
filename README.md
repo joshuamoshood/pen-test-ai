@@ -9,8 +9,89 @@ This project implements an AI-powered web application security scanner using Aut
 - Ethical scanning practices
 - Report enrichment with CWE mappings
 - AI-powered vulnerability analysis
+- RESTful API with secure endpoints
+- Containerized deployment with Docker
 
-## Setup
+## Docker Setup
+
+1. Clone the repository and navigate to the project directory
+
+2. Create a `.env` file with the following configuration:
+```bash
+OLLAMA_PORT=11434
+ZAP_PORT=8080
+API_KEY=your-secure-api-key-here  # Replace with a secure random string
+```
+
+3. Build and start the Docker containers:
+```bash
+docker compose up -d
+```
+
+This will start three services:
+- App service (FastAPI application) on port 8000
+- ZAP service on the configured ZAP_PORT
+- Ollama service on the configured OLLAMA_PORT
+
+## API Server
+
+The application exposes a RESTful API with the following endpoints:
+
+### Base URL
+```
+http://localhost:8000
+```
+
+### API Documentation
+FastAPI provides automatic interactive API documentation:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+
+### Authentication
+All secured endpoints require an API key passed in the header:
+```
+X-API-Key: your-secure-api-key-here
+```
+
+### Endpoints
+
+1. Health Check
+```
+GET /
+Response: {"message": "Security Scanner API is running"}
+```
+
+2. Run Security Scan
+```
+POST /scan?target_url=https://example.com
+Headers: 
+  - X-API-Key: your-secure-api-key-here
+
+Response:
+{
+    "status": "success",
+    "data": {
+        // Scan results in JSON format
+    }
+}
+```
+
+### Example API Usage
+
+1. Check if the API is running:
+```bash
+curl http://localhost:8000/
+```
+
+2. Run a security scan:
+```bash
+curl -X POST "http://localhost:8000/scan?target_url=https://example.com" \
+-H "X-API-Key: your-secure-api-key-here"
+```
+
+## Local Setup (Alternative to Docker)
+
+If you prefer to run the application locally without Docker:
 
 1. Install dependencies:
 ```bash

@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
     volumes:
       - ./reports:/app/reports
     environment:
@@ -10,6 +12,8 @@ services:
       - OLLAMA_PORT=${OLLAMA_PORT}
       - ZAP_URL=http://zap:${ZAP_PORT}
       - OLLAMA_URL=http://ollama:${OLLAMA_PORT}
+    env_file:
+      - ./.env
     depends_on:
       - zap
       - ollama

@@ -12,5 +12,5 @@ done
 echo "Pulling model..."
 curl -X POST http://ollama:${OLLAMA_PORT}/api/pull -d '{"name":"phi4-mini:latest"}'
 
-echo "Running zap_processor..."
-python3 zap_processor.py --target https://example.com
+echo "Starting FastAPI server..."
+uvicorn api:app --host 0.0.0.0 --port 8000 --reload
