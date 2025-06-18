@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 from scanner import VulnerabilityScanner, EthicalScanner
 import subprocess
-
+import re
 # Load environment variables
 load_dotenv()
 
@@ -86,35 +86,6 @@ class SecurityScanner:
             return None
 
 
-# def read_project_files(
-#     project_dir,
-#     allowed_extensions=(".py", ".js", ".html", ".ts", ".css"),
-#     ignore_dirs=("venv", "node_modules", ".git"),
-#     max_file_size_kb=100
-# ):
-#     """
-#     Recursively read files from project_dir with allowed extensions,
-#     skipping specified directories and large files.
-#     """
-#     contents = []
-#     for root, dirs, files in os.walk(project_dir):
-#         # Modify dirs in-place to skip ignored directories
-#         dirs[:] = [d for d in dirs if d not in ignore_dirs]
-#
-#         for filename in files:
-#             if filename.endswith(allowed_extensions):
-#                 file_path = os.path.join(root, filename)
-#                 try:
-#                     if os.path.getsize(file_path) > max_file_size_kb * 1024:
-#                         continue  # Skip large files
-#
-#                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-#                         contents.append(f"File: {file_path}\n{f.read()}\n\n")
-#
-#                 except Exception as e:
-#                     contents.append(f"File: {file_path}\n[Error reading file: {e}]\n\n")
-#     return "\n".join(contents)
-
 def read_project_files(
     project_dir,
     allowed_extensions=(".py", ".js", ".html", ".ts", ".css"),
@@ -158,10 +129,8 @@ def create_security_agents():
     config_list = [
         {
             "model": "phi4-mini:latest",
-            #"model": "phi3:3.8b",
-            "base_url": "http://localhost:11434/api",
-            "api_type": "ollama",
-            "temperature": 0.2
+            "base_url": "http://localhost:11434/v1",  # change this url for windows to http://localhost:11434/api 
+            "api_type": "ollama"
         }
     ]
 
@@ -198,7 +167,7 @@ RULES:
 7. DO NOT repeat or include the full project code — only show the changed or added lines needed for the fix.""",
         llm_config={
             "config_list": config_list,
-            "cache_seed": 42
+            "cache_seed": 50
         }
     )
 
@@ -216,31 +185,82 @@ RULES:
 
     return security_assistant, user_proxy
 
+
+def extract_vuln_sections(response_str):
+    sections = {
+        "critical": "",
+        "medium": "",
+        "actions": ""
+    }
+
+    # # Regexes to capture each section
+    critical_match = re.search(r'CRITICAL VULNERABILITIES:\n(.*?)(?=\n(?:MEDIUM|IMMEDIATE ACTIONS|$))', response_str, re.DOTALL)
+    medium_match = re.search(r'MEDIUM VULNERABILITIES:\n(.*?)(?=\n(?:IMMEDIATE ACTIONS|$))', response_str, re.DOTALL)
+    action_match = re.search(r'IMMEDIATE ACTIONS:\n(.*?)(?=\n[-=]{5,}|$)', response_str, re.DOTALL)
+    
+
+    def clean_text(text):
+        # Remove newlines and sequences of - or =, replace them with a single space
+        text = re.sub(r'[\n\r]+', ' ', text)                # replace all line breaks with space
+        text = re.sub(r'[-=]{2,}', ' ', text)               # replace sequences of - or = with space
+        text = re.sub(r'[\/|]+', '', text)                   # remove slashes / and pipes |
+        text = re.sub(r'\s+', ' ', text)                    # collapse multiple spaces into one
+        # Optional: reduce repeated "DO NOT CHANGE ANY OTHER LINE." to one occurrence
+        text = re.sub(r'(DO NOT CHANGE ANY OTHER LINE\.)+', 'DO NOT CHANGE ANY OTHER LINE.', text)
+        return text.strip()
+
+    if critical_match:
+        sections["critical"] = clean_text(critical_match.group(1))
+    if medium_match:
+        sections["medium"] = clean_text(medium_match.group(1))
+    if action_match:
+        sections["actions"] = clean_text(action_match.group(1))
+
+    return sections
+
+
 def run_security_scan(target_url: str, scan_type: str, project_code, report_path: str = None):
-    """Main function to run the security scan"""
+    """
+    Run security scan and/or analyze existing report.
+    Returns structured analysis including vulnerabilities and actions.
+    """
     if not report_path:
         ensure_ollama_models()
-    
-    console.print(f"[bold green]{'Analyzing saved report' if report_path else 'Starting security scan for ' + target_url}[/bold green]")
-    
+
+    console.print(f"[bold green]{'Analyzing saved report' if report_path else 'Starting security scan for ' + (target_url or 'N/A')}[/bold green]")
+
     try:
         if report_path:
             with open(report_path, 'r') as f:
                 report_content = json.load(f)
-                
+
+            findings = report_content.get('findings', [])
             risk_levels = {"high": 0, "medium": 0, "low": 0, "informational": 0}
-            for finding in report_content.get('findings', []):
-                risk_level = finding['risk_level'].lower()
-                if risk_level in risk_levels:
-                    risk_levels[risk_level] += 1
-                
+
+            for f in findings:
+                risk = f.get('risk_level', '').lower()
+                if risk in risk_levels:
+                    risk_levels[risk] += 1
+
             security_assistant, user_proxy = create_security_agents()
-            
+
+            raw_findings_json = json.dumps([
+                {
+                    'id': f'VULN-{i+1:03d}',
+                    'risk': f['risk_level'],
+                    'name': f['name'],
+                    'description': f['description'],
+                    'url': f['url'],
+                    'solution': f['solution']
+                }
+                for i, f in enumerate(findings)
+            ], indent=2)
+
             report_summary = f"""SECURITY_ANALYSIS_REQUEST
 ==========================
 TARGET: {target_url if target_url else 'N/A'}
 SCAN_TYPE: {scan_type}
-TOTAL_VULNERABILITIES: {len(report_content.get('findings', []))}
+TOTAL_VULNERABILITIES: {len(findings)}
 
 STATISTICS:
 - HIGH: {risk_levels['high']}
@@ -249,14 +269,7 @@ STATISTICS:
 - INFO: {risk_levels['informational']}
 
 RAW_FINDINGS:
-{json.dumps([{
-    'id': f'VULN-{i+1:03d}',
-    'risk': f['risk_level'],
-    'name': f['name'],
-    'description': f['description'],
-    'url': f['url'],
-    'solution': f['solution']
-} for i, f in enumerate(report_content.get('findings', []))], indent=2)}
+{raw_findings_json}
 
 - PROJECT_CODE:
 {project_code}
@@ -271,73 +284,95 @@ DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
 =========================="""
 
             try:
-                import threading
-                import _thread
-                
+                import threading, _thread
+
+                result = {"critical": "", "medium": "", "actions": ""}
+
                 def timeout_handler():
                     _thread.interrupt_main()
-                
-                timer = threading.Timer(1000.0, timeout_handler)
+
+                timer = threading.Timer(300.0, timeout_handler)
                 timer.start()
-                
+
                 try:
                     response = user_proxy.initiate_chat(
                         security_assistant,
                         message=report_summary,
-                        max_turns=1  # Limit to single response
+                        max_turns=1
                     )
-                    
-                    if response:
-                        console.print("[green]Security analysis complete.[/green]")
-                    else:
-                        console.print("[yellow]No analysis generated. Please check the report file directly.[/yellow]")
-                        
-                except KeyboardInterrupt:
-                    console.print("[red]Analysis timed out after 5 minutes.[/red]")
-                    console.print(f"[yellow]Raw report available at: {report_path}[/yellow]")
-                finally:
                     timer.cancel()
-                    
+
+                    if not response:
+                        return {"status": "error", "message": "No analysis generated."}
+
+                    # Extract sections using regex or delimiters (basic split)
+                    content = response.chat_history[-1]["content"]
+                
+                    # result["summary"] = content
+
+                    sections = extract_vuln_sections(content)
+                    result.update(sections)
+
+                    return result
+                except KeyboardInterrupt:
+                    timer.cancel()
+                    return {"status": "timeout", "message": "Analysis timed out after 5 minutes."}
+
             except Exception as e:
-                console.print(f"[red]Analysis error: {str(e)}[/red]")
-                console.print(f"[yellow]Raw report available at: {report_path}[/yellow]")
+                return {"status": "error", "message": f"Analysis failed: {str(e)}"}
+
         else:
+            # No report path: run scan first, then re-analyze
             scanner = SecurityScanner(target_url, scan_type)
-            report_path = scanner.perform_scan()
-            if not report_path:
-                console.print("[red]Scan failed or was aborted.[/red]")
-                return
-            
-            run_security_scan(target_url, scan_type, report_path)
-            
+            generated_report_path = scanner.perform_scan()
+            if not generated_report_path:
+                return {"status": "error", "message": "Scan failed or was aborted."}
+
+            # Read project code again in case changes occurred
+            updated_code = read_project_files(os.path.abspath("../renewable-energy-app-main"))
+            return run_security_scan(target_url, scan_type, updated_code, generated_report_path)
+
     except FileNotFoundError:
-        console.print(f"[red]Error: Report file not found: {report_path}[/red]")
+        return {"status": "error", "message": f"Report file not found: {report_path}"}
     except json.JSONDecodeError:
-        console.print(f"[red]Error: Invalid JSON in report file: {report_path}[/red]")
+        return {"status": "error", "message": "Invalid JSON in report file."}
     except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
+        return {"status": "error", "message": str(e)}
+
+
 
 def main():
     parser = argparse.ArgumentParser(description='AI-powered ethical web security scanner')
     parser.add_argument('--target', help='Target URL to scan')
-    parser.add_argument('--scan-type', choices=['basic', 'full'], default='basic',
-                      help='Type of scan to perform')
+    parser.add_argument('--scan-type', choices=['basic', 'full'], default='basic', help='Type of scan to perform')
     parser.add_argument('--report', help='Path to existing report file to analyze')
-    
+    parser.add_argument('--project-path', default='../renewable-energy-api-main', help='Path to the project source code')
+
     args = parser.parse_args()
-    
+
+    # Validation: at least target or report must be provided
     if not args.report and not args.target:
         console.print("[red]Error: Either --target or --report must be specified[/red]")
         return
-    
+
     if args.target and not args.target.startswith(('http://', 'https://')):
         console.print("[red]Error: Target URL must start with http:// or https://[/red]")
         return
-    
-    #run_security_scan(args.target, args.scan_type, args.report)
-    project_path = os.path.abspath("../../Oraclelens_renewable_energy_app/renewable-energy-app-main")  # or specify your path directly
+
+    # Read project code
+    project_path = os.path.abspath(args.project_path)
     project_code = read_project_files(project_path)
-    run_security_scan(args.target, args.scan_type, project_code, args.report)
+
+    # Run scan
+    result = run_security_scan(
+        target_url=args.target,
+        scan_type=args.scan_type,
+        project_code=project_code,
+        report_path=args.report
+    )
+
+    # Print formatted JSON result
+    print(json.dumps(result, indent=2))
 
 if __name__ == "__main__":
-    main() 
+    main()
