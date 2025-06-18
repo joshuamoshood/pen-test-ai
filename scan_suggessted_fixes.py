@@ -85,14 +85,83 @@ class SecurityScanner:
             console.print(f"[red]Error during scan: {e}[/red]")
             return None
 
+
+# def read_project_files(
+#     project_dir,
+#     allowed_extensions=(".py", ".js", ".html", ".ts", ".css"),
+#     ignore_dirs=("venv", "node_modules", ".git"),
+#     max_file_size_kb=100
+# ):
+#     """
+#     Recursively read files from project_dir with allowed extensions,
+#     skipping specified directories and large files.
+#     """
+#     contents = []
+#     for root, dirs, files in os.walk(project_dir):
+#         # Modify dirs in-place to skip ignored directories
+#         dirs[:] = [d for d in dirs if d not in ignore_dirs]
+#
+#         for filename in files:
+#             if filename.endswith(allowed_extensions):
+#                 file_path = os.path.join(root, filename)
+#                 try:
+#                     if os.path.getsize(file_path) > max_file_size_kb * 1024:
+#                         continue  # Skip large files
+#
+#                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+#                         contents.append(f"File: {file_path}\n{f.read()}\n\n")
+#
+#                 except Exception as e:
+#                     contents.append(f"File: {file_path}\n[Error reading file: {e}]\n\n")
+#     return "\n".join(contents)
+
+def read_project_files(
+    project_dir,
+    allowed_extensions=(".py", ".js", ".html", ".ts", ".css"),
+    ignore_dirs=("venv", "node_modules", ".git"),
+    max_file_size_kb=100
+):
+    """
+    Recursively read files with allowed extensions, skipping ignored directories,
+    and include line numbers for each line.
+    """
+    contents = []
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+
+        for filename in files:
+            if filename.endswith(allowed_extensions):
+                file_path = os.path.join(root, filename)
+                try:
+                    if os.path.getsize(file_path) > max_file_size_kb * 1024:
+                        continue
+
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = f.readlines()
+
+                    numbered_lines = [
+                        f"{str(i + 1).rjust(4)} | {line.rstrip()}" for i, line in enumerate(lines)
+                    ]
+
+                    file_content = f"File: {file_path}\n" + "\n".join(numbered_lines) + "\n\n"
+                    contents.append(file_content)
+
+                except Exception as e:
+                    contents.append(f"File: {file_path}\n[Error reading file: {e}]\n\n")
+
+    return "\n".join(contents)
+
+
 def create_security_agents():
     """Create AutoGen agents using Ollama models"""
     
     config_list = [
         {
-            "model": "deepseek-coder:6.7b",
+            "model": "phi4-mini:latest",
+            #"model": "phi3:3.8b",
             "base_url": "http://localhost:11434/api",
-            "api_type": "ollama"
+            "api_type": "ollama",
+            "temperature": 0.2
         }
     ]
 
@@ -100,6 +169,8 @@ def create_security_agents():
     security_assistant = autogen.AssistantAgent(
         name="security_expert",
         system_message="""SECURITY VULNERABILITY ANALYZER
+        
+You are a secure code specialist. Your sole task is to fix vulnerabilities based ONLY on the provided PROJECT_CODE and RAW_FINDINGS.
 
 OUTPUT FORMAT REQUIREMENTS:
 ------------------------
@@ -109,25 +180,22 @@ OUTPUT FORMAT REQUIREMENTS:
    - Impact: <security impact>
    - Steps to Reproduce: <numbered steps>
    - Fix: <specific commands or code>
-   - Timeline: <days to fix>
 
 2. MEDIUM VULNERABILITIES:
    - Same format as above
 
 3. IMMEDIATE ACTIONS:
-   - Numbered list of urgent fixes
-
-4. TIMELINE SUMMARY:
-   - Day 1: <actions>
-   - Day 2-3: <actions>
-   - Day 4-7: <actions>
+   - File: <path to the file from PROJECT_CODE>
+   - Actions: <exact line numbers and fix instructions (code changes, additions, or deletions)>
 
 RULES:
-1. ONLY use the above format
-2. NO discussions or explanations
-3. NO JSON examples or formatting
-4. NO casual conversation
-5. Focus ONLY on technical findings""",
+1. Follow ONLY the required format above.
+2. DO NOT include explanations, justifications, summaries, or any extra text.
+3. DO NOT include JSON, Markdown, or block formatting.
+4. DO NOT reference anything outside of the provided PROJECT_CODE.
+5. DO NOT modify or refer to any file that is not included in PROJECT_CODE.
+6. DO NOT invent vulnerabilities — only respond to listed RAW_FINDINGS.
+7. DO NOT repeat or include the full project code — only show the changed or added lines needed for the fix.""",
         llm_config={
             "config_list": config_list,
             "cache_seed": 42
@@ -148,7 +216,7 @@ RULES:
 
     return security_assistant, user_proxy
 
-def run_security_scan(target_url: str, scan_type: str, report_path: str = None):
+def run_security_scan(target_url: str, scan_type: str, project_code, report_path: str = None):
     """Main function to run the security scan"""
     if not report_path:
         ensure_ollama_models()
@@ -190,12 +258,14 @@ RAW_FINDINGS:
     'solution': f['solution']
 } for i, f in enumerate(report_content.get('findings', []))], indent=2)}
 
-REQUIRED_RESPONSE_FORMAT:
+- PROJECT_CODE:
+{project_code}
+
+ONLY RETURN:
 ------------------------
 1. CRITICAL VULNERABILITIES
 2. MEDIUM VULNERABILITIES
 3. IMMEDIATE ACTIONS
-4. TIMELINE SUMMARY
 
 DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
 =========================="""
@@ -207,7 +277,7 @@ DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
                 def timeout_handler():
                     _thread.interrupt_main()
                 
-                timer = threading.Timer(300.0, timeout_handler)
+                timer = threading.Timer(1000.0, timeout_handler)
                 timer.start()
                 
                 try:
@@ -264,7 +334,10 @@ def main():
         console.print("[red]Error: Target URL must start with http:// or https://[/red]")
         return
     
-    run_security_scan(args.target, args.scan_type, args.report)
+    #run_security_scan(args.target, args.scan_type, args.report)
+    project_path = os.path.abspath("../../Oraclelens_renewable_energy_app/renewable-energy-app-main")  # or specify your path directly
+    project_code = read_project_files(project_path)
+    run_security_scan(args.target, args.scan_type, project_code, args.report)
 
 if __name__ == "__main__":
     main() 
