@@ -224,17 +224,19 @@ def run_security_scan(target_url: str, scan_type: str, project_code, report_path
     Run security scan and/or analyze existing report.
     Returns structured analysis including vulnerabilities and actions.
     """
-    if not report_path:
-        ensure_ollama_models()
+    # if not report_path:
+    #     ensure_ollama_models()
 
     console.print(f"[bold green]{'Analyzing saved report' if report_path else 'Starting security scan for ' + (target_url or 'N/A')}[/bold green]")
 
     try:
         if report_path:
-            with open(report_path, 'r') as f:
-                report_content = json.load(f)
+            # with open(report_path, 'r') as f:
+            #     report_content = json.load(f)
+            report_content = report_path
 
-            findings = report_content.get('findings', [])
+            # findings = report_content.get('findings', [])
+            findings = report_content.get("data", {}).get("findings", [])
             risk_levels = {"high": 0, "medium": 0, "low": 0, "informational": 0}
 
             for f in findings:
@@ -250,7 +252,8 @@ def run_security_scan(target_url: str, scan_type: str, project_code, report_path
                     'risk': f['risk_level'],
                     'name': f['name'],
                     'description': f['description'],
-                    'url': f['url'],
+                    # 'url': f['url'],
+                    'affected_urls': f['affected_urls'],
                     'solution': f['solution']
                 }
                 for i, f in enumerate(findings)
@@ -345,13 +348,13 @@ def main():
     parser = argparse.ArgumentParser(description='AI-powered ethical web security scanner')
     parser.add_argument('--target', help='Target URL to scan')
     parser.add_argument('--scan-type', choices=['basic', 'full'], default='basic', help='Type of scan to perform')
-    parser.add_argument('--report', help='Path to existing report file to analyze')
-    parser.add_argument('--project-path', default='../renewable-energy-api-main', help='Path to the project source code')
+    parser.add_argument('--data', help='Path to existing report file to analyze')
+    #parser.add_argument('--project-path', default='../renewable-energy-api-main', help='Path to the project source code')
 
     args = parser.parse_args()
 
     # Validation: at least target or report must be provided
-    if not args.report and not args.target:
+    if not args.data and not args.target:
         console.print("[red]Error: Either --target or --report must be specified[/red]")
         return
 
@@ -360,15 +363,15 @@ def main():
         return
 
     # Read project code
-    project_path = os.path.abspath(args.project_path)
-    project_code = read_project_files(project_path)
+    #project_path = os.path.abspath(args.project_path)
+    project_code = read_project_files("../renewable-energy-app-main")
 
     # Run scan
     result = run_security_scan(
         target_url=args.target,
         scan_type=args.scan_type,
         project_code=project_code,
-        report_path=args.report
+        report_path=args.data
     )
 
     # Print formatted JSON result
