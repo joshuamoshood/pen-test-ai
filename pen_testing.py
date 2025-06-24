@@ -2,13 +2,13 @@ import os
 import autogen
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.progress import Progress
 from zapv2 import ZAPv2
 import argparse
 import json
 from datetime import datetime
 from scanner import VulnerabilityScanner, EthicalScanner
 import subprocess
-import re
 
 # Load environment variables
 load_dotenv()
@@ -17,7 +17,7 @@ console = Console()
 
 def ensure_ollama_models():
     """Ensure required Ollama models are pulled"""
-    required_models = ['mixtral:latest']
+    required_models = ['deepseek-coder:6.7b', 'phi4-mini:latest']
     
     console.print("[yellow]Checking for required Ollama models...[/yellow]")
     for model in required_models:
@@ -60,10 +60,6 @@ class SecurityScanner:
                 proxies={'http': f'http://localhost:{os.getenv("ZAP_PORT")}', 
                         'https': f'http://localhost:{os.getenv("ZAP_PORT")}'}
             )
-            # Clear previous session and results
-            self.zap.core.new_session(name="", overwrite=True)
-            self.zap.alert.delete_all_alerts()
-            
             # Initialize vulnerability scanner with ZAP instance
             self.vulnerability_scanner = VulnerabilityScanner(self.zap, self.config)
             console.print("[green]Successfully connected to OWASP ZAP[/green]")
@@ -94,7 +90,7 @@ def create_security_agents():
     
     config_list = [
         {
-            "model": "mixtral:latest",
+            "model": "phi4-mini:latest",
             "base_url": "http://localhost:11434/api",
             "api_type": "ollama"
         }
@@ -103,69 +99,50 @@ def create_security_agents():
     # Create the assistant agent for security scanning
     security_assistant = autogen.AssistantAgent(
         name="security_expert",
-        system_message="""CRITICAL INSTRUCTION: YOU MUST RESPOND WITH PURE JSON ONLY.
+        system_message="""SECURITY VULNERABILITY ANALYZER
 
-DO NOT ADD:
-- NO markdown
-- NO code blocks
-- NO explanations
-- NO text before or after JSON
-- NO formatting
+OUTPUT FORMAT REQUIREMENTS:
+------------------------
+1. CRITICAL VULNERABILITIES:
+   - ID: <vuln-id>
+   - Description: <brief description>
+   - Impact: <security impact>
+   - Steps to Reproduce: <numbered steps>
+   - Fix: <specific commands or code>
+   - Timeline: <days to fix>
 
-EXAMPLE RESPONSE FORMAT:
-{
-    "scan_metadata": {
-        "timestamp": "2024-03-05T12:34:56Z",
-        "target": "example.com",
-        "scan_type": "basic"
-    },
-    "vulnerabilities": [
-        {
-            "id": "VULN-001",
-            "name": "SQL Injection",
-            "risk_level": "HIGH",
-            "cwe_id": "CWE-89",
-            "cve_refs": ["CVE-2024-1234"],
-            "description": "SQL injection in login form",
-            "replication_steps": [
-                "1. Access /login endpoint",
-                "2. Insert malicious payload"
-            ],
-            "fix": {
-                "summary": "Use parameterized queries",
-                "technical_steps": [
-                    "1. Replace string concatenation with prepared statements",
-                    "2. Implement input validation"
-                ]
-            }
-        }
-    ],
-    "remediation_plan": {
-        "critical": ["Deploy WAF"],
-        "high": ["Update queries"],
-        "medium": ["Add validation"],
-        "low": ["Update docs"]
-    }
-}
+2. MEDIUM VULNERABILITIES:
+   - Same format as above
 
-REMEMBER: OUTPUT JSON ONLY. ANY OTHER FORMAT WILL BE REJECTED.""",
+3. IMMEDIATE ACTIONS:
+   - Numbered list of urgent fixes
+
+4. TIMELINE SUMMARY:
+   - Day 1: <actions>
+   - Day 2-3: <actions>
+   - Day 4-7: <actions>
+
+RULES:
+1. ONLY use the above format
+2. NO discussions or explanations
+3. NO JSON examples or formatting
+4. NO casual conversation
+5. Focus ONLY on technical findings""",
         llm_config={
             "config_list": config_list,
-            "cache_seed": 42,
-            "temperature": 0.1  # Lower temperature for more structured output
+            "cache_seed": 42
         }
     )
 
     # Create the user proxy agent
     user_proxy = autogen.UserProxyAgent(
         name="user_proxy",
-        system_message="SECURITY REPORT SENDER - ENFORCE JSON OUTPUT ONLY",
+        system_message="SECURITY REPORT SENDER - NO CONVERSATION - TECHNICAL DATA ONLY",
         human_input_mode="NEVER",
         code_execution_config=False,
         llm_config={
             "config_list": config_list,
-            "cache_seed": 42,
-            "temperature": 0.1
+            "cache_seed": 42
         }
     )
 
@@ -191,32 +168,41 @@ def run_security_scan(target_url: str, scan_type: str, report_path: str = None):
                 
             security_assistant, user_proxy = create_security_agents()
             
-            report_summary = f"""RESPOND WITH JSON ONLY. NO OTHER TEXT.
+            report_summary = f"""SECURITY_ANALYSIS_REQUEST
+==========================
+TARGET: {target_url if target_url else 'N/A'}
+SCAN_TYPE: {scan_type}
+TOTAL_VULNERABILITIES: {len(report_content.get('findings', []))}
 
-INPUT_DATA:
-{json.dumps({
-    'target': target_url,
-    'scan_type': scan_type,
-    'findings': [{
-        'id': f'VULN-{i+1:03d}',
-        'name': f['name'],
-        'risk_level': f['risk_level'],
-        'description': f['description'],
-        'url': f['url'],
-        'solution': f['solution']
-    } for i, f in enumerate(report_content.get('findings', []))],
-    'statistics': {
-        'high': risk_levels['high'],
-        'medium': risk_levels['medium'],
-        'low': risk_levels['low'],
-        'info': risk_levels['informational']
-    }
-}, indent=2)}"""
+STATISTICS:
+- HIGH: {risk_levels['high']}
+- MEDIUM: {risk_levels['medium']}
+- LOW: {risk_levels['low']}
+- INFO: {risk_levels['informational']}
+
+RAW_FINDINGS:
+{json.dumps([{
+    'id': f'VULN-{i+1:03d}',
+    'risk': f['risk_level'],
+    'name': f['name'],
+    'description': f['description'],
+    'url': f['url'],
+    'solution': f['solution']
+} for i, f in enumerate(report_content.get('findings', []))], indent=2)}
+
+REQUIRED_RESPONSE_FORMAT:
+------------------------
+1. CRITICAL VULNERABILITIES
+2. MEDIUM VULNERABILITIES
+3. IMMEDIATE ACTIONS
+4. TIMELINE SUMMARY
+
+DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
+=========================="""
 
             try:
                 import threading
                 import _thread
-                from datetime import datetime
                 
                 def timeout_handler():
                     _thread.interrupt_main()
@@ -225,49 +211,14 @@ INPUT_DATA:
                 timer.start()
                 
                 try:
-                    # Get the chat history after analysis
-                    chat_history = user_proxy.initiate_chat(
+                    response = user_proxy.initiate_chat(
                         security_assistant,
                         message=report_summary,
-                        max_turns=1
+                        max_turns=1  # Limit to single response
                     )
                     
-                    if chat_history:
-                        # Get the last message from the security assistant
-                        messages = list(filter(
-                            lambda x: x.get('role') == 'assistant' and x.get('name') == 'security_expert',
-                            chat_history.chat_history
-                        ))
-                        
-                        if messages:
-                            # Clean up the message content
-                            last_message = messages[-1].get('content', '').strip()
-                            # Remove any markdown code block indicators
-                            last_message = re.sub(r'^```json\s*|\s*```$', '', last_message, flags=re.MULTILINE)
-                            last_message = last_message.strip()
-                            
-                            try:
-                                # Try to parse the entire message as JSON
-                                enhanced_report = json.loads(last_message)
-                                
-                                # Write enhanced report to new file
-                                output_dir = os.path.dirname(report_path)
-                                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                                enhanced_report_path = os.path.join(
-                                    output_dir, 
-                                    f'enhanced_security_report_{timestamp}.json'
-                                )
-                                
-                                with open(enhanced_report_path, 'w') as f:
-                                    json.dump(enhanced_report, f, indent=2)
-                                
-                                console.print(f"[green]Enhanced security report written to: {enhanced_report_path}[/green]")
-                            except json.JSONDecodeError:
-                                console.print("[red]Invalid JSON in response.[/red]")
-                                console.print("[yellow]Raw response:[/yellow]")
-                                console.print(last_message)
-                        else:
-                            console.print("[red]No response from security expert.[/red]")
+                    if response:
+                        console.print("[green]Security analysis complete.[/green]")
                     else:
                         console.print("[yellow]No analysis generated. Please check the report file directly.[/yellow]")
                         
