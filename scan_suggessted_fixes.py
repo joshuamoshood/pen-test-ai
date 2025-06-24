@@ -8,6 +8,7 @@ import argparse
 import json
 from datetime import datetime
 from scanner import VulnerabilityScanner, EthicalScanner
+from fastapi.responses import JSONResponse
 import subprocess
 import re
 # Load environment variables
@@ -137,37 +138,50 @@ def create_security_agents():
     # Create the assistant agent for security scanning
     security_assistant = autogen.AssistantAgent(
         name="security_expert",
-        system_message="""SECURITY VULNERABILITY ANALYZER
-        
-You are a secure code specialist. Your sole task is to fix vulnerabilities based ONLY on the provided PROJECT_CODE and RAW_FINDINGS.
+        system_message = """
+You are a security analyst tasked with producing structured JSON vulnerability reports for developers.
 
 OUTPUT FORMAT REQUIREMENTS:
-------------------------
-1. CRITICAL VULNERABILITIES:
-   - ID: <vuln-id>
-   - Description: <brief description>
-   - Impact: <security impact>
-   - Steps to Reproduce: <numbered steps>
-   - Fix: <specific commands or code>
+Return the output ONLY as valid JSON with the following structure:
 
-2. MEDIUM VULNERABILITIES:
-   - Same format as above
-
-3. IMMEDIATE ACTIONS:
-   - File: <path to the file from PROJECT_CODE>
-   - Actions: <exact line numbers and fix instructions (code changes, additions, or deletions)>
+{
+  "high": [
+    {
+      "id": 1,
+      "file": "<relative_file_path_or_N/A>",
+      "action": "<concise combined description and fix>"
+    }
+  ],
+  "medium": [
+    {
+      "id": 1,
+      "file": "<relative_file_path_or_N/A>",
+      "action": "<concise combined description and fix>"
+    }
+  ],
+  "low": [
+    {
+      "id": 1,
+      "file": "<relative_file_path_or_N/A>",
+      "action": "<concise combined description and fix>"
+    }
+  ]
+}
 
 RULES:
-1. Follow ONLY the required format above.
-2. DO NOT include explanations, justifications, summaries, or any extra text.
-3. DO NOT include JSON, Markdown, or block formatting.
-4. DO NOT reference anything outside of the provided PROJECT_CODE.
-5. DO NOT modify or refer to any file that is not included in PROJECT_CODE.
-6. DO NOT invent vulnerabilities — only respond to listed RAW_FINDINGS.
-7. DO NOT repeat or include the full project code — only show the changed or added lines needed for the fix.""",
+- Classify each finding into one of the three groups: "high", "medium", or "low".
+  - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
+  - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
+  - "low": minor issues or best practices, like missing caching headers or informational leaks.
+- For each item:
+  - Use a sequential integer for the "id", starting from 1 within each severity group.
+  - Extract the file path from the `affected_urls` (use the path portion of the first URL). If unavailable, use "N/A".
+  - The "action" should summarize both the issue and the recommended fix in a single sentence, developer-readable.
+- DO NOT return any text, markdown, explanations, or comments outside of the JSON object.
+""",
         llm_config={
             "config_list": config_list,
-            "cache_seed": 50
+            "cache_seed": 99
         }
     )
 
@@ -179,12 +193,11 @@ RULES:
         code_execution_config=False,
         llm_config={
             "config_list": config_list,
-            "cache_seed": 42
+            "cache_seed": 99
         }
     )
 
     return security_assistant, user_proxy
-
 
 def extract_vuln_sections(response_str):
     sections = {
@@ -194,10 +207,13 @@ def extract_vuln_sections(response_str):
     }
 
     # # Regexes to capture each section
-    critical_match = re.search(r'CRITICAL VULNERABILITIES:\n(.*?)(?=\n(?:MEDIUM|IMMEDIATE ACTIONS|$))', response_str, re.DOTALL)
-    medium_match = re.search(r'MEDIUM VULNERABILITIES:\n(.*?)(?=\n(?:IMMEDIATE ACTIONS|$))', response_str, re.DOTALL)
-    action_match = re.search(r'IMMEDIATE ACTIONS:\n(.*?)(?=\n[-=]{5,}|$)', response_str, re.DOTALL)
-    
+    critical_match = re.search(r'\d*\.*\s*CRITICAL VULNERABILITIES:\s*(.*?)(?=\n\s*\d*\.*\s*(MEDIUM VULNERABILITIES:|IMMEDIATE ACTIONS:|$))',
+                response_str, re.DOTALL | re.IGNORECASE)
+    medium_match = re.search(r'\d*\.*\s*MEDIUM VULNERABILITIES:\s*(.*?)(?=\n\s*\d*\.*\s*(IMMEDIATE ACTIONS:|$))',
+                response_str, re.DOTALL | re.IGNORECASE)
+    action_match = re.search(r'\d*\.*\s*IMMEDIATE ACTIONS:\s*(.*?)(?=\n[-=]{3,}|$)',
+                response_str, re.DOTALL | re.IGNORECASE)
+
 
     def clean_text(text):
         # Remove newlines and sequences of - or =, replace them with a single space
@@ -218,6 +234,30 @@ def extract_vuln_sections(response_str):
 
     return sections
 
+def normalize_to_severity_format(critical_text, medium_text, actions_text):
+    def build_entries(severity_text, file_fallback, start_id=1):
+        if not severity_text:
+            return []
+
+        return [
+            {
+                "id": idx + start_id,
+                "file": file_fallback,
+                "action": sentence.strip()
+            }
+            for idx, sentence in enumerate(re.split(r'(?<=\.)\s+', severity_text.strip()))
+            if sentence
+        ]
+
+    # Example fallback file path (replace with real extraction logic if needed)
+    fallback_file = "src/app/guards/auth.guard.ts"
+
+    formatted_json = {
+        "high": build_entries(critical_text, fallback_file),
+        "medium": build_entries(medium_text, fallback_file),
+        "low": build_entries(actions_text, fallback_file)
+    }
+    return formatted_json
 
 def run_security_scan(target_url: str, scan_type: str, project_code, report_path: str = None):
     """
@@ -227,7 +267,7 @@ def run_security_scan(target_url: str, scan_type: str, project_code, report_path
     # if not report_path:
     #     ensure_ollama_models()
 
-    console.print(f"[bold green]{'Analyzing saved report' if report_path else 'Starting security scan for ' + (target_url or 'N/A')}[/bold green]")
+    # console.print(f"[bold green]{'Analyzing saved report' if report_path else 'Starting security scan for ' + (target_url or 'N/A')}[/bold green]")
 
     try:
         if report_path:
@@ -289,8 +329,8 @@ DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
             try:
                 import threading, _thread
 
-                result = {"critical": "", "medium": "", "actions": ""}
-
+                # result = {"critical": "", "medium": "", "actions": ""}
+                result = {}
                 def timeout_handler():
                     _thread.interrupt_main()
 
@@ -304,18 +344,25 @@ DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
                         max_turns=1
                     )
                     timer.cancel()
-
+                    
                     if not response:
                         return {"status": "error", "message": "No analysis generated."}
 
                     # Extract sections using regex or delimiters (basic split)
                     content = response.chat_history[-1]["content"]
-                
-                    # result["summary"] = content
-
-                    sections = extract_vuln_sections(content)
-                    result.update(sections)
-
+                    return content
+                    # sections = extract_vuln_sections(content)
+                    # result.update(sections)
+                    ################
+                    # converted = normalize_to_severity_format(
+                    #                 critical_text=sections.get("critical", ""),
+                    #                 medium_text=sections.get("medium", ""),
+                    #                 actions_text=sections.get("actions", "")
+                    #                 )
+                    # print(json.dumps(converted, indent=2))
+                    # return JSONResponse(content=converted)
+                    
+                    ################
                     return result
                 except KeyboardInterrupt:
                     timer.cancel()
@@ -342,40 +389,3 @@ DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-
-
-def main():
-    parser = argparse.ArgumentParser(description='AI-powered ethical web security scanner')
-    parser.add_argument('--target', help='Target URL to scan')
-    parser.add_argument('--scan-type', choices=['basic', 'full'], default='basic', help='Type of scan to perform')
-    parser.add_argument('--data', help='Path to existing report file to analyze')
-    #parser.add_argument('--project-path', default='../renewable-energy-api-main', help='Path to the project source code')
-
-    args = parser.parse_args()
-
-    # Validation: at least target or report must be provided
-    if not args.data and not args.target:
-        console.print("[red]Error: Either --target or --report must be specified[/red]")
-        return
-
-    if args.target and not args.target.startswith(('http://', 'https://')):
-        console.print("[red]Error: Target URL must start with http:// or https://[/red]")
-        return
-
-    # Read project code
-    #project_path = os.path.abspath(args.project_path)
-    project_code = read_project_files("../renewable-energy-app-main")
-
-    # Run scan
-    result = run_security_scan(
-        target_url=args.target,
-        scan_type=args.scan_type,
-        project_code=project_code,
-        report_path=args.data
-    )
-
-    # Print formatted JSON result
-    print(json.dumps(result, indent=2))
-
-if __name__ == "__main__":
-    main()
