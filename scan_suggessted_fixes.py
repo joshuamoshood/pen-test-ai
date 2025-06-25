@@ -140,50 +140,51 @@ def create_security_agents():
         name="security_expert",
         system_message = """
 You are a security analyst tasked with producing structured JSON vulnerability reports for developers.
-
-OUTPUT FORMAT REQUIREMENTS:
-Return the output ONLY as valid JSON with the following structure:
-
-{
-  "high": [
-    {
-      "id": 1,
-      "file": "<relative_file_path_or_N/A>",
-      "action": "<concise combined description and fix>"
-    }
-  ],
-  "medium": [
-    {
-      "id": 1,
-      "file": "<relative_file_path_or_N/A>",
-      "action": "<concise combined description and fix>"
-    }
-  ],
-  "low": [
-    {
-      "id": 1,
-      "file": "<relative_file_path_or_N/A>",
-      "action": "<concise combined description and fix>"
-    }
-  ]
-}
-
-RULES:
-- Classify each finding into one of the three groups: "high", "medium", or "low".
-  - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
-  - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
-  - "low": minor issues or best practices, like missing caching headers or informational leaks.
-- For each item:
-  - Use a sequential integer for the "id", starting from 1 within each severity group.
-  - Extract the file path from the `affected_urls` (use the path portion of the first URL). If unavailable, use "N/A".
-  - The "action" should summarize both the issue and the recommended fix in a single sentence, developer-readable.
-- DO NOT return any text, markdown, explanations, or comments outside of the JSON object.
 """,
         llm_config={
             "config_list": config_list,
-            "cache_seed": 99
+            "cache_seed": 42
         }
     )
+
+# """
+# OUTPUT FORMAT REQUIREMENTS:
+# You MUST return the output ONLY as valid JSON with the following structure:
+#
+# {
+#   "high": [
+#     {
+#       "id": 1,
+#       "file": "<relative_file_path_or_N/A>",
+#       "action": "<concise combined description and fix>"
+#     }
+#   ],
+#   "medium": [
+#     {
+#       "id": 1,
+#       "file": "<relative_file_path_or_N/A>",
+#       "action": "<concise combined description and fix>"
+#     }
+#   ],
+#   "low": [
+#     {
+#       "id": 1,
+#       "file": "<relative_file_path_or_N/A>",
+#       "action": "<concise combined description and fix>"
+#     }
+#   ]
+# }
+#
+# RULES:
+# - Classify each finding into one of the three groups: "high", "medium", or "low".
+#   - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
+#   - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
+#   - "low": minor issues or best practices, like missing caching headers or informational leaks.
+# - For each item:
+#   - Use a sequential integer for the "id", starting from 1 within each severity group.
+#   - Extract the file path from the `affected_urls` (use the path portion of the first URL). If unavailable, use "N/A".
+#   - The "action" should summarize both the issue and the recommended fix in a single sentence, developer-readable.
+# - DO NOT return any text, markdown, explanations, or comments outside of the JSON object."""
 
     # Create the user proxy agent
     user_proxy = autogen.UserProxyAgent(
@@ -259,7 +260,7 @@ def normalize_to_severity_format(critical_text, medium_text, actions_text):
     }
     return formatted_json
 
-def run_security_scan(target_url: str, scan_type: str, project_code, report_path: str = None):
+def run_security_scan(target_url: str, scan_type: str, project_code, report_path: dict = None):
     """
     Run security scan and/or analyze existing report.
     Returns structured analysis including vulnerabilities and actions.
@@ -274,9 +275,11 @@ def run_security_scan(target_url: str, scan_type: str, project_code, report_path
             # with open(report_path, 'r') as f:
             #     report_content = json.load(f)
             report_content = report_path
+            #print(report_content)
 
             # findings = report_content.get('findings', [])
-            findings = report_content.get("data", {}).get("findings", [])
+            findings = report_content["findings"]
+            #print(findings)
             risk_levels = {"high": 0, "medium": 0, "low": 0, "informational": 0}
 
             for f in findings:
@@ -293,7 +296,7 @@ def run_security_scan(target_url: str, scan_type: str, project_code, report_path
                     'name': f['name'],
                     'description': f['description'],
                     # 'url': f['url'],
-                    'affected_urls': f['affected_urls'],
+                    #'affected_urls': f['affected_urls'],
                     'solution': f['solution']
                 }
                 for i, f in enumerate(findings)
@@ -311,19 +314,48 @@ STATISTICS:
 - LOW: {risk_levels['low']}
 - INFO: {risk_levels['informational']}
 
+PROJECT_CODE:
+{project_code}
+
 RAW_FINDINGS:
 {raw_findings_json}
 
-- PROJECT_CODE:
-{project_code}
+OUTPUT FORMAT REQUIREMENTS:
+You MUST return the output ONLY as valid JSON with the following structure:
 
-ONLY RETURN:
-------------------------
-1. CRITICAL VULNERABILITIES
-2. MEDIUM VULNERABILITIES
-3. IMMEDIATE ACTIONS
+{{
+  "high": [
+    {{
+      "id": <The corresponding id of the vulnerability>,
+      "file": "<file path of the affected project file or N/A>",
+      "action": "<Detailed description and fix>"
+    }}
+  ],
+  "medium": [
+    {{
+      "id": <The corresponding id of the vulnerability>,
+      "file": "<file path of the affected project file or N/A>",
+      "action": "<Detailed description and fix>"
+    }}
+  ],
+  "low": [
+    {{
+      "id": <The corresponding id of the vulnerability>,
+      "file": "<file path of the affected project file or N/A>",
+      "action": "<Detailed description and fix>"
+    }}
+  ]
+}}
 
-DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
+RULES:
+- Classify each finding into one of the three groups: "high", "medium", or "low".
+  - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
+  - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
+  - "low": minor issues or best practices, like missing caching headers or informational leaks.
+- For each item:
+  - Extract the file path ONLY from the provided PROJECT_CODE files(listed after the keyword "File:") for each effected file. If unavailable, use "N/A".
+  - The "action" should summarize both the issue and the recommended fix. Provide sample fixes with line numbers from PROJECT_CODE if available.
+- DO NOT return any text, markdown, explanations, or comments outside of the JSON object.
 =========================="""
 
             try:
@@ -334,7 +366,7 @@ DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
                 def timeout_handler():
                     _thread.interrupt_main()
 
-                timer = threading.Timer(300.0, timeout_handler)
+                timer = threading.Timer(600.0, timeout_handler)
                 timer.start()
 
                 try:
@@ -363,7 +395,7 @@ DO NOT INCLUDE ANY OTHER CONTENT OR DISCUSSION.
                     # return JSONResponse(content=converted)
                     
                     ################
-                    return result
+                    #return result
                 except KeyboardInterrupt:
                     timer.cancel()
                     return {"status": "timeout", "message": "Analysis timed out after 5 minutes."}
