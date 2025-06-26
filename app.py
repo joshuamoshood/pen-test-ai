@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import os
 from scan_suggessted_fixes import read_project_files, run_security_scan
 from typing import Optional, Dict, Any
+import json
 
 app = FastAPI()
 
@@ -15,7 +16,7 @@ class ScanRequest(BaseModel):
 @app.post("/scan")
 def start_scan(req: ScanRequest):
     try:
-        project_code = read_project_files("../renewable-energy-app-main")
+        project_code = read_project_files("../../Oraclelens_renewable_energy_app/renewable-energy-app-main")
         result = run_security_scan(req.target, req.scan_type, project_code, req.data)
         return result
     except Exception as e:

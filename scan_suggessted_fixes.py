@@ -91,7 +91,7 @@ def read_project_files(
     project_dir,
     allowed_extensions=(".py", ".js", ".html", ".ts", ".css"),
     ignore_dirs=("venv", "node_modules", ".git"),
-    max_file_size_kb=100
+    max_file_size_kb=10000
 ):
     """
     Recursively read files with allowed extensions, skipping ignored directories,
@@ -115,11 +115,18 @@ def read_project_files(
                         f"{str(i + 1).rjust(4)} | {line.rstrip()}" for i, line in enumerate(lines)
                     ]
 
-                    file_content = f"File: {file_path}\n" + "\n".join(numbered_lines) + "\n\n"
+                    file_content = (
+                            f"===FILE START===\n"
+                            f"File: {file_path}\n"
+                            + "\n".join(numbered_lines) +
+                            f"\n===FILE END===\n\n"
+                    )
                     contents.append(file_content)
 
                 except Exception as e:
-                    contents.append(f"File: {file_path}\n[Error reading file: {e}]\n\n")
+                    contents.append(
+                        f"===FILE START===\nFile: {file_path}\n[Error reading file: {e}]\n===FILE END===\n\n"
+                    )
 
     return "\n".join(contents)
 
@@ -260,6 +267,10 @@ def normalize_to_severity_format(critical_text, medium_text, actions_text):
     }
     return formatted_json
 
+def estimate_phi4mini_tokens(prompt: str):
+    # Simple heuristic: 1 token ≈ 3.5 characters (English)
+    return int(len(prompt) / 3.5)
+
 def run_security_scan(target_url: str, scan_type: str, project_code, report_path: dict = None):
     """
     Run security scan and/or analyze existing report.
@@ -304,6 +315,15 @@ def run_security_scan(target_url: str, scan_type: str, project_code, report_path
 
             report_summary = f"""SECURITY_ANALYSIS_REQUEST
 ==========================
+You will be provided with full source code of the project and a vulnerability report. Your task is the following:
+- For each vulnerability in RAW_FINDINGS:
+    - Classify each finding into one of the three groups: "high", "medium", or "low" according to "risk" for each findings.
+        - If the "risk" is "Critical", categorize the finding into "high" section.
+        - If the "risk" is "Medium", categorize the finding into "medium" section.
+        - If the "risk" is "Low" or "Informational", categorize the finding into "low" section.
+    - Analyze the vulnerability based on the name, description and general solution.
+    - Suggest actionable fixes to the vulnerability under "action" with reference to files under section PROJECT_CODE. Include the target file and code snippet with line numbers if possible.
+
 TARGET: {target_url if target_url else 'N/A'}
 SCAN_TYPE: {scan_type}
 TOTAL_VULNERABILITIES: {len(findings)}
@@ -315,9 +335,11 @@ STATISTICS:
 - INFO: {risk_levels['informational']}
 
 PROJECT_CODE:
+The following section includes full source code of the project. Vulnerability locations are often preceded by the keyword "File:" followed by the absolute or relative path of the affected file.
 {project_code}
 
 RAW_FINDINGS:
+The penetration test findings are listed below. Each finding will include an id, vulnerability name, description, risk levels, and general solutions.
 {raw_findings_json}
 
 OUTPUT FORMAT REQUIREMENTS:
@@ -327,35 +349,67 @@ You MUST return the output ONLY as valid JSON with the following structure:
   "high": [
     {{
       "id": <The corresponding id of the vulnerability>,
+      "name": <The corresponding name of the vulnerability>,
       "file": "<file path of the affected project file or N/A>",
-      "action": "<Detailed description and fix>"
+      "action": "<Specific and actionable remediation steps for this vulnerability>"
     }}
   ],
   "medium": [
     {{
       "id": <The corresponding id of the vulnerability>,
+      "name": <The corresponding name of the vulnerability>,
       "file": "<file path of the affected project file or N/A>",
-      "action": "<Detailed description and fix>"
+      "action": "<Specific and actionable remediation steps for this vulnerability>"
     }}
   ],
   "low": [
     {{
       "id": <The corresponding id of the vulnerability>,
+      "name": <The corresponding name of the vulnerability>,
       "file": "<file path of the affected project file or N/A>",
-      "action": "<Detailed description and fix>"
+      "action": "<Specific and actionable remediation steps for this vulnerability>"
     }}
   ]
 }}
 
 RULES:
-- Classify each finding into one of the three groups: "high", "medium", or "low".
-  - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
-  - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
-  - "low": minor issues or best practices, like missing caching headers or informational leaks.
 - For each item:
-  - Extract the file path ONLY from the provided PROJECT_CODE files(listed after the keyword "File:") for each effected file. If unavailable, use "N/A".
-  - The "action" should summarize both the issue and the recommended fix. Provide sample fixes with line numbers from PROJECT_CODE if available.
-- DO NOT return any text, markdown, explanations, or comments outside of the JSON object.
+  - Use the finding's 'id' (e.g., 'VULN-001') as the 'id', and use finding's 'name' (e.g., 'Missing Anti-clickjacking Header') as the 'name'.
+  - For each vulnerability, if relevant code is found, identify the corresponding File: from the code section and include it in the JSON output. Use the exact path from the line starting with File:.
+  - The 'action' must combine the issue description and recommended fix in one sentence, referencing line numbers if available.
+- Return ONLY the JSON object, with no additional text, markdown, explanations, or comments.
+
+The following is a expected output for a sample vulnerability:
+Example Vulnerability:
+{{
+    "id": "VULN-001",
+    "risk": "Medium",
+    "name": "Missing Anti-clickjacking Header",
+    "description": "The response does not protect against 'ClickJacking' attacks. It should include either Content-Security-Policy with 'frame-ancestors' directive or X-Frame-Options.",
+    "solution": "Modern Web browsers support the Content-Security-Policy and X-Frame-Options HTTP headers. Ensure one of them is set on all web pages returned by your site/app.\nIf
+ you expect the page to be framed only by pages on your server (e.g. it's part of a FRAMESET) then you'll want to use SAMEORIGIN, otherwise if you never expect the page to be framed, you should use DENY. Alternatively consider implementing Content Security Policy's \"frame-ancestors\" directive."
+}}
+
+Matching Code:
+===FILE START===
+File: src/server/responseHeaders.js
+   1 | const express = require('express');
+   2 | const app = express();
+   3 |
+   4 | app.use((req, res, next) => {{
+   5 |     res.setHeader('X-Content-Type-Options', 'nosniff');
+   6 |     res.setHeader('Referrer-Policy', 'no-referrer');
+   7 |     next();
+   8 | }});
+===FILE END===
+
+Expected Output for this vulnerability:
+{{
+  "id": "VULN-001",
+  "name": "Missing Anti-clickjacking Header",
+  "file": "src/server/responseHeaders.js",
+  "action": "Add one of the following headers in your middleware:res.setHeader('X-Frame-Options', 'DENY'); Place it alongside other security headers (e.g., after line 5)."
+}}
 =========================="""
 
             try:
