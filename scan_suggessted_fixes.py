@@ -121,15 +121,24 @@ def read_project_files(
                             + "\n".join(numbered_lines) +
                             f"\n===FILE END===\n\n"
                     )
+                    #file_content = f"File: {file_path}\n" + "\n".join(numbered_lines) + "\n\n"
                     contents.append(file_content)
 
                 except Exception as e:
                     contents.append(
                         f"===FILE START===\nFile: {file_path}\n[Error reading file: {e}]\n===FILE END===\n\n"
                     )
+                    #contents.append(f"File: {file_path}\n[Error reading file: {e}]\n\n")
 
     return "\n".join(contents)
 
+def extract_file_paths(project_code):
+    return re.findall(r'^File:\s+(.+)$', project_code, flags=re.MULTILINE)
+
+def chunk_findings(findings, chunk_size=3):
+    """Split findings into batches of N."""
+    for i in range(0, len(findings), chunk_size):
+        yield findings[i:i + chunk_size]
 
 def create_security_agents():
     """Create AutoGen agents using Ollama models"""
@@ -286,11 +295,11 @@ def run_security_scan(target_url: str, scan_type: str, project_code, report_path
             # with open(report_path, 'r') as f:
             #     report_content = json.load(f)
             report_content = report_path
+            project_file_list = extract_file_paths(project_code)
             #print(report_content)
 
             # findings = report_content.get('findings', [])
             findings = report_content["findings"]
-            #print(findings)
             risk_levels = {"high": 0, "medium": 0, "low": 0, "informational": 0}
 
             for f in findings:
@@ -327,12 +336,6 @@ You will be provided with full source code of the project and a vulnerability re
 TARGET: {target_url if target_url else 'N/A'}
 SCAN_TYPE: {scan_type}
 TOTAL_VULNERABILITIES: {len(findings)}
-
-STATISTICS:
-- HIGH: {risk_levels['high']}
-- MEDIUM: {risk_levels['medium']}
-- LOW: {risk_levels['low']}
-- INFO: {risk_levels['informational']}
 
 PROJECT_CODE:
 The following section includes full source code of the project. Vulnerability locations are often preceded by the keyword "File:" followed by the absolute or relative path of the affected file.
