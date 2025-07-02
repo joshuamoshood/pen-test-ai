@@ -86,6 +86,40 @@ class SecurityScanner:
             console.print(f"[red]Error during scan: {e}[/red]")
             return None
 
+def get_relevant_files(findings, project_dir):
+    """
+    Map ZAP findings to potentially relevant source files.
+    Returns a dict mapping finding IDs to relevant file contents.
+    """
+    relevant_files = {}
+    file_contents = list(read_project_files(project_dir))
+    for finding in findings:
+        finding_id = finding.get('id')
+        name = finding.get('name', '').lower()
+        risk = finding.get('risk_level', '').lower()
+        
+        # Map informational findings to low severity
+        if risk == 'informational':
+            relevant_files[finding_id] = []  # No files for informational
+            continue
+
+        # mapping
+        file_patterns = {
+            'sql injection': ['database', 'query', 'sql'],
+            'xss': ['template', 'html', 'js', 'view'],
+            'authentication': ['auth', 'login', 'session'],
+            'csrf': ['form', 'post', 'controller'],
+            'user agent fuzzer': ['middleware', 'request', 'handler']
+        }
+        relevant = []
+        for pattern, keywords in file_patterns.items():
+            if pattern in name:
+                for content in file_contents:
+                    if any(keyword in content.lower() for keyword in keywords):
+                        relevant.append(content)
+                break
+        relevant_files[finding_id] = relevant if relevant else file_contents[:2]
+    return relevant_files
 
 def read_project_files(
     project_dir,
@@ -94,52 +128,92 @@ def read_project_files(
     max_file_size_kb=100
 ):
     """
-    Recursively read files with allowed extensions, skipping ignored directories,
-    and include line numbers for each line.
+    Yield file contents one at a time with line numbers.
     """
-    contents = []
     for root, dirs, files in os.walk(project_dir):
         dirs[:] = [d for d in dirs if d not in ignore_dirs]
-
         for filename in files:
             if filename.endswith(allowed_extensions):
                 file_path = os.path.join(root, filename)
                 try:
                     if os.path.getsize(file_path) > max_file_size_kb * 1024:
+                        console.print(f"[yellow]Skipping large file: {file_path} ({os.path.getsize(file_path)/1024:.1f} KB)[/yellow]")
                         continue
-
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         lines = f.readlines()
-
                     numbered_lines = [
                         f"{str(i + 1).rjust(4)} | {line.rstrip()}" for i, line in enumerate(lines)
                     ]
-
                     file_content = f"File: {file_path}\n" + "\n".join(numbered_lines) + "\n\n"
-                    contents.append(file_content)
-
+                    yield file_content
                 except Exception as e:
-                    contents.append(f"File: {file_path}\n[Error reading file: {e}]\n\n")
-
-    return "\n".join(contents)
-
+                    yield f"File: {file_path}\n[Error reading file: {e}]\n\n"
 
 def create_security_agents():
     """Create AutoGen agents using Ollama models"""
-    
     config_list = [
         {
             "model": "phi4-mini:latest",
-            "base_url": "http://localhost:11434/v1",  # change this url for windows to http://localhost:11434/api 
-            "api_type": "ollama"
+            "base_url": "http://localhost:11434/v1",
+            "api_type": "ollama",
+            "max_tokens": 4096,
+            "temperature": 0.3  # Lower for deterministic output
         }
     ]
 
-    # Create the assistant agent for security scanning
+    # Updated system message
     security_assistant = autogen.AssistantAgent(
         name="security_expert",
-        system_message = """
+        system_message="""
 You are a security analyst tasked with producing structured JSON vulnerability reports for developers.
+Analyze the provided ZAP findings and project code, then return a JSON object with the following structure:
+
+{
+  "high": [
+    {
+      "id": "<The corresponding id of the vulnerability>",
+      "file": "<file path of the affected project file or N/A>",
+      "action": "<Detailed description and fix>"
+    }
+  ],
+  "medium": [
+    {
+      "id": "<The corresponding id of the vulnerability>",
+      "file": "<file path of the affected project file or N/A>",
+      "action": "<Detailed description and fix>"
+    }
+  ],
+  "low": [
+    {
+      "id": "<The corresponding id of the vulnerability>",
+      "file": "<file path of the affected project file or N/A>",
+      "action": "<Detailed description and fix>"
+    }
+  ]
+}
+
+RULES:
+- Classify each finding into one of three groups: "high", "medium", or "low".
+  - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
+  - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
+  - "low": minor issues or best practices, like missing caching headers or informational leaks.
+- For each item:
+  - Use the finding's 'id' (e.g., 'VULN-001') as the 'id'.
+  - Extract the file path from the provided PROJECT_CODE (files listed after "File:") or use "N/A" if no file is identified.
+  - The 'action' must combine the issue description and recommended fix in one sentence, referencing line numbers if available.
+- Return ONLY the JSON object, with no additional text, markdown, explanations, or comments.
+- Example output for a finding:
+  {
+    "high": [],
+    "medium": [
+      {
+        "id": "VULN-001",
+        "file": "templates/index.html",
+        "action": "XSS vulnerability in user input at line 15; use Jinja2 autoescaping or bleach library."
+      }
+    ],
+    "low": []
+  }
 """,
         llm_config={
             "config_list": config_list,
@@ -147,46 +221,6 @@ You are a security analyst tasked with producing structured JSON vulnerability r
         }
     )
 
-# """
-# OUTPUT FORMAT REQUIREMENTS:
-# You MUST return the output ONLY as valid JSON with the following structure:
-#
-# {
-#   "high": [
-#     {
-#       "id": 1,
-#       "file": "<relative_file_path_or_N/A>",
-#       "action": "<concise combined description and fix>"
-#     }
-#   ],
-#   "medium": [
-#     {
-#       "id": 1,
-#       "file": "<relative_file_path_or_N/A>",
-#       "action": "<concise combined description and fix>"
-#     }
-#   ],
-#   "low": [
-#     {
-#       "id": 1,
-#       "file": "<relative_file_path_or_N/A>",
-#       "action": "<concise combined description and fix>"
-#     }
-#   ]
-# }
-#
-# RULES:
-# - Classify each finding into one of the three groups: "high", "medium", or "low".
-#   - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
-#   - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
-#   - "low": minor issues or best practices, like missing caching headers or informational leaks.
-# - For each item:
-#   - Use a sequential integer for the "id", starting from 1 within each severity group.
-#   - Extract the file path from the `affected_urls` (use the path portion of the first URL). If unavailable, use "N/A".
-#   - The "action" should summarize both the issue and the recommended fix in a single sentence, developer-readable.
-# - DO NOT return any text, markdown, explanations, or comments outside of the JSON object."""
-
-    # Create the user proxy agent
     user_proxy = autogen.UserProxyAgent(
         name="user_proxy",
         system_message="SECURITY REPORT SENDER - NO CONVERSATION - TECHNICAL DATA ONLY",
@@ -200,224 +234,105 @@ You are a security analyst tasked with producing structured JSON vulnerability r
 
     return security_assistant, user_proxy
 
-def extract_vuln_sections(response_str):
-    sections = {
-        "critical": "",
-        "medium": "",
-        "actions": ""
-    }
-
-    # # Regexes to capture each section
-    critical_match = re.search(r'\d*\.*\s*CRITICAL VULNERABILITIES:\s*(.*?)(?=\n\s*\d*\.*\s*(MEDIUM VULNERABILITIES:|IMMEDIATE ACTIONS:|$))',
-                response_str, re.DOTALL | re.IGNORECASE)
-    medium_match = re.search(r'\d*\.*\s*MEDIUM VULNERABILITIES:\s*(.*?)(?=\n\s*\d*\.*\s*(IMMEDIATE ACTIONS:|$))',
-                response_str, re.DOTALL | re.IGNORECASE)
-    action_match = re.search(r'\d*\.*\s*IMMEDIATE ACTIONS:\s*(.*?)(?=\n[-=]{3,}|$)',
-                response_str, re.DOTALL | re.IGNORECASE)
-
-
-    def clean_text(text):
-        # Remove newlines and sequences of - or =, replace them with a single space
-        text = re.sub(r'[\n\r]+', ' ', text)                # replace all line breaks with space
-        text = re.sub(r'[-=]{2,}', ' ', text)               # replace sequences of - or = with space
-        text = re.sub(r'[\/|]+', '', text)                   # remove slashes / and pipes |
-        text = re.sub(r'\s+', ' ', text)                    # collapse multiple spaces into one
-        # Optional: reduce repeated "DO NOT CHANGE ANY OTHER LINE." to one occurrence
-        text = re.sub(r'(DO NOT CHANGE ANY OTHER LINE\.)+', 'DO NOT CHANGE ANY OTHER LINE.', text)
-        return text.strip()
-
-    if critical_match:
-        sections["critical"] = clean_text(critical_match.group(1))
-    if medium_match:
-        sections["medium"] = clean_text(medium_match.group(1))
-    if action_match:
-        sections["actions"] = clean_text(action_match.group(1))
-
-    return sections
-
-def normalize_to_severity_format(critical_text, medium_text, actions_text):
-    def build_entries(severity_text, file_fallback, start_id=1):
-        if not severity_text:
-            return []
-
-        return [
-            {
-                "id": idx + start_id,
-                "file": file_fallback,
-                "action": sentence.strip()
-            }
-            for idx, sentence in enumerate(re.split(r'(?<=\.)\s+', severity_text.strip()))
-            if sentence
-        ]
-
-    # Example fallback file path (replace with real extraction logic if needed)
-    fallback_file = "src/app/guards/auth.guard.ts"
-
-    formatted_json = {
-        "high": build_entries(critical_text, fallback_file),
-        "medium": build_entries(medium_text, fallback_file),
-        "low": build_entries(actions_text, fallback_file)
-    }
-    return formatted_json
-
-def run_security_scan(target_url: str, scan_type: str, project_code, report_path: dict = None):
+def run_security_scan(target_url: str, scan_type: str, project_dir, report_path: dict = None, batch_size=5):
     """
-    Run security scan and/or analyze existing report.
-    Returns structured analysis including vulnerabilities and actions.
+    Run security scan and/or analyze existing report in batches.
+    Expects project_dir to be a directory path.
     """
-    # if not report_path:
-    #     ensure_ollama_models()
+    if report_path:
+        findings = report_path.get("data", {}).get("findings", [])
+        risk_levels = {"high": 0, "medium": 0, "low": 0, "informational": 0}
+        for f in findings:
+            risk = f.get('risk_level', '').lower()
+            if risk in risk_levels:
+                risk_levels[risk] += 1
 
-    # console.print(f"[bold green]{'Analyzing saved report' if report_path else 'Starting security scan for ' + (target_url or 'N/A')}[/bold green]")
+        security_assistant, user_proxy = create_security_agents()
+        relevant_files = get_relevant_files(findings, project_dir)
+        result = {"high": [], "medium": [], "low": []}
 
-    try:
-        if report_path:
-            # with open(report_path, 'r') as f:
-            #     report_content = json.load(f)
-            report_content = report_path
-            #print(report_content)
-
-            # findings = report_content.get('findings', [])
-            findings = report_content["findings"]
-            #print(findings)
-            risk_levels = {"high": 0, "medium": 0, "low": 0, "informational": 0}
-
-            for f in findings:
-                risk = f.get('risk_level', '').lower()
-                if risk in risk_levels:
-                    risk_levels[risk] += 1
-
-            security_assistant, user_proxy = create_security_agents()
-
+        # Process findings in batches
+        for i in range(0, len(findings), batch_size):
+            batch_findings = findings[i:i + batch_size]
             raw_findings_json = json.dumps([
                 {
-                    'id': f'VULN-{i+1:03d}',
+                    'id': f['id'],
                     'risk': f['risk_level'],
                     'name': f['name'],
                     'description': f['description'],
-                    # 'url': f['url'],
-                    #'affected_urls': f['affected_urls'],
                     'solution': f['solution']
-                }
-                for i, f in enumerate(findings)
+                } for f in batch_findings
             ], indent=2)
 
-            report_summary = f"""SECURITY_ANALYSIS_REQUEST
-==========================
-TARGET: {target_url if target_url else 'N/A'}
+            batch_prompt = f"""SECURITY_ANALYSIS_REQUEST
+TARGET: {target_url or 'N/A'}
 SCAN_TYPE: {scan_type}
-TOTAL_VULNERABILITIES: {len(findings)}
-
-STATISTICS:
-- HIGH: {risk_levels['high']}
-- MEDIUM: {risk_levels['medium']}
-- LOW: {risk_levels['low']}
-- INFO: {risk_levels['informational']}
-
-PROJECT_CODE:
-{project_code}
-
+TOTAL_VULNERABILITIES: {len(batch_findings)}
+STATISTICS: {{'high': {risk_levels['high']}, 'medium': {risk_levels['medium']}, 'low': {risk_levels['low']}, 'info': {risk_levels['informational']}}}
 RAW_FINDINGS:
 {raw_findings_json}
-
 OUTPUT FORMAT REQUIREMENTS:
-You MUST return the output ONLY as valid JSON with the following structure:
-
 {{
-  "high": [
-    {{
-      "id": <The corresponding id of the vulnerability>,
-      "file": "<file path of the affected project file or N/A>",
-      "action": "<Detailed description and fix>"
-    }}
-  ],
-  "medium": [
-    {{
-      "id": <The corresponding id of the vulnerability>,
-      "file": "<file path of the affected project file or N/A>",
-      "action": "<Detailed description and fix>"
-    }}
-  ],
-  "low": [
-    {{
-      "id": <The corresponding id of the vulnerability>,
-      "file": "<file path of the affected project file or N/A>",
-      "action": "<Detailed description and fix>"
-    }}
-  ]
+  "high": [...],
+  "medium": [...],
+  "low": [...]
 }}
-
 RULES:
-- Classify each finding into one of the three groups: "high", "medium", or "low".
-  - "high": severe issues like authentication flaws, injection risks, missing access control, or critical misconfigurations.
-  - "medium": issues like weak headers, CSP absence, insecure defaults, or improper error exposure.
-  - "low": minor issues or best practices, like missing caching headers or informational leaks.
-- For each item:
-  - Extract the file path ONLY from the provided PROJECT_CODE files(listed after the keyword "File:") for each effected file. If unavailable, use "N/A".
-  - The "action" should summarize both the issue and the recommended fix. Provide sample fixes with line numbers from PROJECT_CODE if available.
-- DO NOT return any text, markdown, explanations, or comments outside of the JSON object.
-=========================="""
+- For each finding, use only these files:
+"""
+            for finding in batch_findings:
+                finding_id = finding['id']
+                files = relevant_files.get(finding_id, [])
+                batch_prompt += f"Finding {finding_id}:\n{''.join(files)}\n"
 
             try:
                 import threading, _thread
-
-                # result = {"critical": "", "medium": "", "actions": ""}
-                result = {}
                 def timeout_handler():
                     _thread.interrupt_main()
 
                 timer = threading.Timer(600.0, timeout_handler)
                 timer.start()
 
-                try:
-                    response = user_proxy.initiate_chat(
-                        security_assistant,
-                        message=report_summary,
-                        max_turns=1
-                    )
-                    timer.cancel()
-                    
-                    if not response:
-                        return {"status": "error", "message": "No analysis generated."}
+                response = user_proxy.initiate_chat(
+                    security_assistant,
+                    message=batch_prompt,
+                    max_turns=1
+                )
+                timer.cancel()
 
-                    # Extract sections using regex or delimiters (basic split)
-                    content = response.chat_history[-1]["content"]
-                    return content
-                    # sections = extract_vuln_sections(content)
-                    # result.update(sections)
-                    ################
-                    # converted = normalize_to_severity_format(
-                    #                 critical_text=sections.get("critical", ""),
-                    #                 medium_text=sections.get("medium", ""),
-                    #                 actions_text=sections.get("actions", "")
-                    #                 )
-                    # print(json.dumps(converted, indent=2))
-                    # return JSONResponse(content=converted)
-                    
-                    ################
-                    #return result
-                except KeyboardInterrupt:
-                    timer.cancel()
-                    return {"status": "timeout", "message": "Analysis timed out after 5 minutes."}
+                content = response.chat_history[-1]["content"]
+                cleaned = re.sub(r"^```json\s*|\s*```$", "", content.strip(), flags=re.DOTALL)
+
+                try:
+                    batch_result = json.loads(cleaned)
+                    # Validate JSON structure
+                    if not isinstance(batch_result, dict) or not all(k in batch_result for k in ["high", "medium", "low"]):
+                        raise ValueError("Invalid JSON structure: missing required keys")
+                    for severity in ["high", "medium", "low"]:
+                        for item in batch_result[severity]:
+                            if not all(k in item for k in ["id", "file", "action"]):
+                                raise ValueError(f"Invalid item in {severity}: missing required fields")
+                    # Merge batch results
+                    for severity in ["high", "medium", "low"]:
+                        result[severity].extend(batch_result[severity])
+                except json.JSONDecodeError as e:
+                    console.print(f"[red]Error parsing JSON in batch {i//batch_size + 1}: {str(e)}[/red]")
+                    console.print(f"[yellow]Raw response: {content}[/yellow]")
+                    continue
+                except ValueError as e:
+                    console.print(f"[red]Validation error in batch {i//batch_size + 1}: {str(e)}[/red]")
+                    console.print(f"[yellow]Raw response: {content}[/yellow]")
+                    continue
 
             except Exception as e:
-                return {"status": "error", "message": f"Analysis failed: {str(e)}"}
+                console.print(f"[red]Error processing batch {i//batch_size + 1}: {str(e)}[/red]")
+                continue
 
-        else:
-            # No report path: run scan first, then re-analyze
-            scanner = SecurityScanner(target_url, scan_type)
-            generated_report_path = scanner.perform_scan()
-            if not generated_report_path:
-                return {"status": "error", "message": "Scan failed or was aborted."}
+        return result
 
-            # Read project code again in case changes occurred
-            updated_code = read_project_files(os.path.abspath("../renewable-energy-app-main"))
-            return run_security_scan(target_url, scan_type, updated_code, generated_report_path)
-
-    except FileNotFoundError:
-        return {"status": "error", "message": f"Report file not found: {report_path}"}
-    except json.JSONDecodeError:
-        return {"status": "error", "message": "Invalid JSON in report file."}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
+    else:
+        scanner = SecurityScanner(target_url, scan_type)
+        generated_report_path = scanner.perform_scan()
+        if not generated_report_path:
+            return {"status": "error", "message": "Scan failed or was aborted."}
+        return run_security_scan(target_url, scan_type, project_dir, generated_report_path)
