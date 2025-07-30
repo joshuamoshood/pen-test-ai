@@ -102,22 +102,39 @@ def get_relevant_files(findings, project_dir):
         if risk == 'informational':
             relevant_files[finding_id] = []  # No files for informational
             continue
-
-        # mapping
+        
         file_patterns = {
-            'sql injection': ['database', 'query', 'sql'],
-            'xss': ['template', 'html', 'js', 'view'],
-            'authentication': ['auth', 'login', 'session'],
-            'csrf': ['form', 'post', 'controller'],
-            'user agent fuzzer': ['middleware', 'request', 'handler']
+            "sql injection": ["db", "database", "query", "sql", "model"],
+            "xss": ["template", "render", "html", "view", "response"],
+            "csrf": ["form", "post", "submit", "controller", "token"],
+            "authentication": ["auth", "login", "session", "user", "jwt"],
+            "idor": ["controller", "route", "param", "url", "object"],
+            "security headers": ["middleware", "headers", "response", "server"],
+            "sensitive data exposure": ["config", "credentials", "env", "settings"],
+            "logging": ["log", "logger", "error", "print"],
         }
         relevant = []
         for pattern, keywords in file_patterns.items():
-            if pattern in name:
+            if any(word in name.lower() for word in pattern.lower().split()):
                 for content in file_contents:
                     if any(keyword in content.lower() for keyword in keywords):
                         relevant.append(content)
                 break
+        # mapping
+        # file_patterns = {
+        #     'sql injection': ['database', 'query', 'sql'],
+        #     'xss': ['template', 'html', 'js', 'view'],
+        #     'authentication': ['auth', 'login', 'session'],
+        #     'csrf': ['form', 'post', 'controller'],
+        #     'user agent fuzzer': ['middleware', 'request', 'handler']
+        # }
+        # relevant = []
+        # for pattern, keywords in file_patterns.items():
+        #     if pattern in name:
+        #         for content in file_contents:
+        #             if any(keyword in content.lower() for keyword in keywords):
+        #                 relevant.append(content)
+        #         break
         relevant_files[finding_id] = relevant if relevant else file_contents[:2]
     return relevant_files
 
@@ -217,7 +234,7 @@ RULES:
 """,
         llm_config={
             "config_list": config_list,
-            "cache_seed": 42
+            "cache_seed": 44
         }
     )
 
@@ -228,7 +245,7 @@ RULES:
         code_execution_config=False,
         llm_config={
             "config_list": config_list,
-            "cache_seed": 99
+            "cache_seed": 44
         }
     )
 
@@ -241,6 +258,7 @@ def run_security_scan(target_url: str, scan_type: str, project_dir, report_path:
     """
     if report_path:
         findings = report_path.get("data", {}).get("findings", [])
+        #findings = report_path.get("findings", [])
         risk_levels = {"high": 0, "medium": 0, "low": 0, "informational": 0}
         for f in findings:
             risk = f.get('risk_level', '').lower()
