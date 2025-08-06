@@ -376,6 +376,23 @@ def save_report(report_data: Dict[str, Any], output_dir: str) -> str:
     
     return report_path
 
+def generate_html_report(zap: ZAPv2, target_url: str, output_dir: str) -> str:
+    """Generate HTML report using ZAP's core.htmlreport method"""
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    html_path = os.path.join(output_dir, f"zap_report_{timestamp}.html")
+    
+    try:
+        html_report = zap.core.htmlreport()
+        with open(html_path, 'w') as f:
+            f.write(html_report)
+        console.print(f"[green]HTML report saved to: {html_path}[/green]")
+        return html_path
+        
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not generate HTML report: {str(e)}[/yellow]")
+        return None
+
 def check_rate_limit(max_requests_per_second: int = 2):
     """Implement rate limiting"""
     time.sleep(1.0 / max_requests_per_second)
@@ -410,15 +427,15 @@ def process_raw_findings(raw_findings_path: str, target_url: str, output_dir: st
         
     except FileNotFoundError:
         console.print(f"[red]Error: Raw findings file not found: {raw_findings_path}[/red]")
-        sys.exit(1)
+        raise FileNotFoundError(f"Raw findings file not found: {raw_findings_path}")
     except json.JSONDecodeError:
         console.print(f"[red]Error: Invalid JSON in raw findings file: {raw_findings_path}[/red]")
-        sys.exit(1)
+        raise ValueError(f"Invalid JSON in raw findings file: {raw_findings_path}")
     except Exception as e:
         console.print(f"[red]An error occurred: {str(e)}[/red]")
-        sys.exit(1)
+        raise
 
-def process_zap_scan(target_url: str, output_dir: str = "reports", save_raw: bool = True) -> str:
+def process_zap_scan(target_url: str, output_dir: str = "reports", save_raw: bool = True) -> tuple:
     """Main function to process ZAP scan and generate report"""
     try:
         # Initialize ZAP connection
@@ -462,19 +479,22 @@ def process_zap_scan(target_url: str, output_dir: str = "reports", save_raw: boo
         processor = VulnerabilityProcessor(target_url)
         report_data = processor.process_zap_results(alerts)
         
-        # Save report
+        # Save JSON report
         report_path = save_report(report_data, output_dir)
         console.print(f"[green]Final report saved to: {report_path}[/green]")
         
-        return report_path
+        # Generate HTML report
+        html_path = generate_html_report(zap, target_url, output_dir)
+        
+        return report_path, html_path
         
     except requests.exceptions.RequestException as e:
         console.print(f"[red]Error connecting to ZAP: {str(e)}[/red]")
         console.print("[yellow]Make sure OWASP ZAP is running and the port is correct[/yellow]")
-        sys.exit(1)
+        raise ConnectionError(f"Error connecting to ZAP: {str(e)}")
     except Exception as e:
         console.print(f"[red]An error occurred: {str(e)}[/red]")
-        sys.exit(1)
+        raise
 
 if __name__ == "__main__":
     import argparse
